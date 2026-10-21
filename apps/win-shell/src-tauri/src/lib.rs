@@ -1277,16 +1277,29 @@ async fn session_serve_once(
         let svc = slot.as_mut().ok_or_else(|| "会话未打开".to_string())?;
         svc.take_serve_parts().map_err(|e| e.to_string())?
     };
-    let mut session = DeviceSession::accept_once(&parts)
-        .await
-        .map_err(|e| e.to_string())?;
+    let mut session = match DeviceSession::accept_once(&parts).await {
+        Ok(s) => s,
+        Err(e) => {
+            // The idle accept timeout fires every SERVE_IDLE_WAIT when the peer is quiet; that is
+            // the normal loop tick, not a failure. Only log the interesting ones (a peer that
+            // cancelled its handshake, a TLS mismatch, …).
+            let msg = e.to_string();
+            if !msg.contains("waiting for trusted peer") {
+                tracing::debug!(error = %msg, "serve_once: accept failed");
+            }
+            return Err(msg);
+        }
+    };
     // One read loop for every entry point: Bye / EOF become events, not「入站异常」.
     let read = {
         let mut slot = state.session.lock().await;
         let svc = slot.as_mut().ok_or_else(|| "会话未打开".to_string())?;
         svc.read_inbound(&mut session)
             .await
-            .map_err(|e| e.to_string())?
+            .map_err(|e| {
+                tracing::debug!(error = %e, "serve_once: first frame failed");
+                e.to_string()
+            })?
     };
     let frame = match read {
         InboundRead::Frame(f) => f,

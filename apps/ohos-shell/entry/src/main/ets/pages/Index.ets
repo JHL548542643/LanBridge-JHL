@@ -435,7 +435,9 @@ struct Index {
       s.indexOf('UnexpectedEof') >= 0 || s.indexOf('peer closed') >= 0 ||
       s.indexOf('connection closed') >= 0 || s.indexOf('Connection reset') >= 0 ||
       s.indexOf('强迫关闭') >= 0 || s.indexOf('10054') >= 0 ||
-      s.indexOf('forcibly closed') >= 0;
+      s.indexOf('forcibly closed') >= 0 ||
+      // TLS 层失败（握手被取消/garbage 探测/alert）属对端或协议状态，不是用户可处理的错误
+      s.indexOf('tls:') >= 0;
   }
 
   hostCtx(): common.UIAbilityContext {

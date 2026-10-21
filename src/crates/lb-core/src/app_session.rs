@@ -40,10 +40,12 @@ const PROBE_CONNECT_WAIT: Duration = Duration::from_secs(2);
 const PEER_LIVE_MS: u64 = 12_000;
 /// Heartbeat cadence on an established pair: `Ping` → `Pong` over a trusted session.
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(3);
-/// A half-open network must fail the dial fast enough to keep the 3 s cadence.
-const HEARTBEAT_DIAL_TIMEOUT: Duration = Duration::from_millis(1_500);
+/// A half-open network must fail the dial fast enough to keep the 3 s cadence, but a phone that
+/// has just woken from doze needs more than 1.5 s to finish the TLS handshake — aborting it
+/// produces "tls handshake eof" on the peer's accept loop.
+const HEARTBEAT_DIAL_TIMEOUT: Duration = Duration::from_millis(2_500);
 /// Wait for `Pong` once connected: longer than a LAN RTT, shorter than the next beat.
-const HEARTBEAT_RTT_TIMEOUT: Duration = Duration::from_millis(1_500);
+const HEARTBEAT_RTT_TIMEOUT: Duration = Duration::from_millis(2_000);
 /// Unpair handshake: `Bye` must reach the peer, but must not block the UI forever.
 const UNPAIR_BYE_WAIT: Duration = Duration::from_secs(2);
 

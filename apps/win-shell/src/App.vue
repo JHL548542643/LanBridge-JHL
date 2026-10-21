@@ -806,7 +806,10 @@ async function startServeLoop() {
         s.includes("peer closed") ||
         s.includes("强迫关闭") ||
         s.includes("10054") ||
-        s.includes("forcibly closed")
+        s.includes("forcibly closed") ||
+        // TLS-layer failures at accept are peer/protocol conditions, not user-actionable:
+        // a cancelled heartbeat dial (radio wake-up / busy accept), a garbage probe, an alert…
+        s.includes("tls:")
       ) {
         // probe_peer / soft TLS close — keep listening silently.
         error.value = "";
