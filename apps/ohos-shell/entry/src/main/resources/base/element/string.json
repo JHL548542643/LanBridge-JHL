@@ -1,0 +1,9 @@
+{
+  "string": [
+    { "name": "module_desc", "value": "LanBridge entry" },
+    { "name": "EntryAbility_desc", "value": "LanBridge" },
+    { "name": "EntryAbility_label", "value": "LanBridge" },
+    { "name": "perm_read_pasteboard", "value": "跨设备剪贴板同步：读取本机复制的文本/图片并发送到已配对电脑" },
+    { "name": "perm_read_imagevideo", "value": "截图即共享：读取相册中新产生的截图并发送到已配对电脑" }
+  ]
+}

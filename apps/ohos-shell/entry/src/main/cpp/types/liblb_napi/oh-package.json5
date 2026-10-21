@@ -1,0 +1,8 @@
+{
+  "name": "liblb_napi.so",
+  "type": "object",
+  "version": "1.0",
+  "description": "LanBridge NAPI types (ambient)",
+  "main": "",
+  "types": "./Index.d.ts"
+}

@@ -1,0 +1,9 @@
+{
+  "name": "pair_verify_guest_host_v0",
+  "description": "Role-domain PairVerify tags for code 123456 and fp 0x01.. / 0x02..",
+  "code": "123456",
+  "fp_lo_hex": "0101010101010101010101010101010101010101010101010101010101010101",
+  "fp_hi_hex": "0202020202020202020202020202020202020202020202020202020202020202",
+  "guest_tag_hex": "70df3d90c6c5ff3858f3b58bde97e90a373b1016e15927f20c4de9e49d91fcd4",
+  "host_tag_hex": "1b55fea151b2a759749a6f3384a7804a7ad8b4f8a01af62b02a5190f16ab60ae"
+}

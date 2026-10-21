@@ -1,0 +1,60 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: src
+    steps:
+      # Actions are pinned to commit SHAs: a tag can be retargeted, a SHA cannot.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a # v2
+        with:
+          workspaces: src -> target
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test --workspace
+
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a # v2
+        with:
+          workspaces: src -> target
+      - name: cargo audit (RustSec advisories)
+        run: |
+          cargo install cargo-audit --locked --quiet
+          cargo audit
+        working-directory: src
+
+  leak-guard:
+    # This job exists so private identifiers can never slip into a later commit. The patterns are
+    # assembled at run time on purpose: the file itself must not contain them.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: no private paths / identities
+        run: |
+          set -e
+          sep=$(printf '\134')
+          P_PATH="D:${sep}LJH"
+          P_USER="JHL""548542643"
+          P_DEV="33Z""0224A"
+          P_MAIL="1667""256030"
+          echo "scanning..."
+          if grep -rInE --binary-files=without-match "${P_PATH}|${P_USER}|${P_DEV}|${P_MAIL}" --exclude-dir=.git . ; then
+            echo "::error::private path or identity found in the tree"
+            exit 1
+          fi
+          echo "clean"

@@ -1,0 +1,24 @@
+[package]
+name = "lb-ffi"
+description = "C ABI facade for LanBridge shells (Tauri optional path / HarmonyOS NAPI)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+[lib]
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[features]
+# HarmonyOS: forward tracing events to hilog (OH_LOG_Print). Enabled by build-ohos-ffi.ps1.
+ohos-log = []
+
+[dependencies]
+lb-core = { workspace = true }
+lb-crypto = { workspace = true }
+lb-protocol = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "sync", "time"] }
+rustls = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }

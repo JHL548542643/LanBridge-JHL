@@ -1,0 +1,5 @@
+{
+  "name": "ping_v0",
+  "description": "Ping with nonce 0x0123456789ABCDEF",
+  "frame_hex": "4c42667200000020000000080123456789abcdef"
+}

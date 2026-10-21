@@ -1,0 +1,5 @@
+{
+  "name": "bye_v0",
+  "description": "Bye with empty payload",
+  "frame_hex": "4c4266720000003000000000"
+}

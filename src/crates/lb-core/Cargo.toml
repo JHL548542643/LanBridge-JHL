@@ -1,0 +1,58 @@
+[package]
+name = "lb-core"
+description = "LanBridge core facade (apps/FFI call this crate)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+lb-protocol = { workspace = true }
+lb-crypto = { workspace = true }
+lb-discovery = { workspace = true }
+lb-session = { workspace = true }
+lb-transfer = { workspace = true }
+lb-clipboard = { workspace = true }
+tokio = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+rustls = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+arboard = "3"
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+[[example]]
+name = "status_verify"
+path = "examples/status_verify.rs"
+
+[[example]]
+name = "loopback_pair"
+path = "examples/loopback_pair.rs"
+
+[[example]]
+name = "loopback_file"
+path = "examples/loopback_file.rs"
+
+[[example]]
+name = "host_recv"
+path = "examples/host_recv.rs"
+
+[[example]]
+name = "guest_send"
+path = "examples/guest_send.rs"
+
+[[example]]
+name = "guest_lan_bench"
+path = "examples/guest_lan_bench.rs"
+
+[[example]]
+name = "host_recv_clip"
+path = "examples/host_recv_clip.rs"
+
+[[example]]
+name = "guest_send_clip"
+path = "examples/guest_send_clip.rs"

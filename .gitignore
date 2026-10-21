@@ -1,0 +1,29 @@
+# Rust
+target/
+**/target/
+
+# Node
+node_modules/
+dist/
+
+# Tauri
+apps/win-shell/src-tauri/gen/
+
+# DevEco / HarmonyOS
+apps/ohos-shell/.hvigor/
+apps/ohos-shell/.idea/
+apps/ohos-shell/oh_modules/
+apps/ohos-shell/entry/oh_modules/
+apps/ohos-shell/entry/build/
+apps/ohos-shell/entry/.cxx/
+apps/ohos-shell/local.properties
+apps/ohos-shell/build-profile.json5
+apps/ohos-shell/*.dmp
+apps/ohos-shell/.clangd
+
+# Local scratch
+.tmp/
+*.log
+
+# generated at release time (see scripts/gen-notices.ps1)
+THIRD-PARTY-NOTICES.md

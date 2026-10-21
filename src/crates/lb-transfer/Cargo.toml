@@ -1,0 +1,24 @@
+[package]
+name = "lb-transfer"
+description = "File transfer over an established LanBridge control session"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+lb-protocol = { workspace = true }
+lb-crypto = { workspace = true }
+lb-session = { workspace = true }
+bytes = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["fs", "time"] }
+futures = { version = "0.3", default-features = false, features = ["std"] }
+tracing = { workspace = true }
+rand = { workspace = true }
+
+[dev-dependencies]
+lb-session = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time", "fs"] }
+rustls = { workspace = true }

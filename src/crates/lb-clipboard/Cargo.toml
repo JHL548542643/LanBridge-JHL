@@ -1,0 +1,21 @@
+[package]
+name = "lb-clipboard"
+description = "Cross-device clipboard sync over LanBridge control session"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+lb-protocol = { workspace = true }
+lb-session = { workspace = true }
+bytes = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+lb-crypto = { workspace = true }
+lb-session = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time"] }
+rustls = { workspace = true }

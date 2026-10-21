@@ -1,0 +1,45 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/lb-protocol",
+    "crates/lb-crypto",
+    "crates/lb-discovery",
+    "crates/lb-session",
+    "crates/lb-transfer",
+    "crates/lb-clipboard",
+    "crates/lb-ffi",
+    "crates/lb-core",
+]
+default-members = ["crates/lb-core"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+publish = false
+rust-version = "1.85"
+
+[workspace.dependencies]
+lb-protocol = { path = "crates/lb-protocol" }
+lb-crypto = { path = "crates/lb-crypto" }
+lb-discovery = { path = "crates/lb-discovery" }
+lb-session = { path = "crates/lb-session" }
+lb-transfer = { path = "crates/lb-transfer" }
+lb-clipboard = { path = "crates/lb-clipboard" }
+lb-ffi = { path = "crates/lb-ffi" }
+lb-core = { path = "crates/lb-core" }
+
+bytes = "1.10"
+thiserror = "2.0"
+sha2 = "0.10"
+hmac = "0.12"
+hex = "0.4"
+rand = "0.8"
+rcgen = "0.13"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+rustls-pki-types = "1.11"
+tokio = { version = "1.44", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
+tracing = "0.1"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"

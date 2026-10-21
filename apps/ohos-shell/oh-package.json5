@@ -1,0 +1,11 @@
+{
+  "name": "lanbridge",
+  "version": "1.0.0",
+  "description": "LanBridge HarmonyOS shell",
+  "main": "",
+  "author": "LanBridge",
+  "license": "LicenseRef-Proprietary",
+  "dependencies": {},
+  "devDependencies": {},
+  "modelVersion": "5.0.0"
+}
