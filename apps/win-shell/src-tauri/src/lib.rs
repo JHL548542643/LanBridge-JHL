@@ -4,7 +4,7 @@ use lb_core::{
     establish_receiver, establish_sender, generate_pairing_code, pair_as_guest, pair_as_host,
     push_clipboard, recv_clipboard, recv_file, send_file, ByteProgress, ClipboardItem,
     DeviceIdentity, DeviceSession, Features, InboundEvent, InboundRead, MsgType, RecvOptions,
-    SendOptions, SessionStatus, PROTOCOL_VERSION, DEFAULT_CONTROL_PORT,
+    SendOptions, SessionStatus, DEFAULT_CONTROL_PORT, PROTOCOL_VERSION,
 };
 use serde::Serialize;
 use std::path::PathBuf;
@@ -202,6 +202,70 @@ where
     f(svc)
 }
 
+/// Bumped from the main thread so a watchdog can tell when the event loop is blocked.
+static MAIN_TICK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Last known step on the UI-thread path; the watchdog prints it when the loop stops answering,
+/// which is the only way to see *where* a hang sits without a debugger.
+static STEP: std::sync::Mutex<&'static str> = std::sync::Mutex::new("boot");
+
+fn step(s: &'static str) {
+    if let Ok(mut g) = STEP.lock() {
+        *g = s;
+    }
+}
+
+fn cur_step() -> &'static str {
+    STEP.lock().map(|g| *g).unwrap_or("?")
+}
+
+/// Sets the step for the duration of a scope (cleared on drop, including early returns).
+struct StepGuard(&'static str);
+impl StepGuard {
+    fn new(s: &'static str) -> Self {
+        step(s);
+        Self(s)
+    }
+}
+impl Drop for StepGuard {
+    fn drop(&mut self) {
+        step("idle");
+    }
+}
+
+/// Log a sync command that holds the UI thread for too long (they run on the main thread).
+fn note_slow(name: &'static str, started: std::time::Instant) {
+    let ms = started.elapsed().as_millis();
+    if ms >= 250 {
+        tracing::warn!(command = name, ms, "sync command blocked the UI thread");
+    }
+}
+
+/// Watchdog: if the event loop stops answering for >3 s, Windows will show「未响应」soon.
+fn spawn_main_thread_watchdog(app: tauri::AppHandle) {
+    std::thread::spawn(move || {
+        let mut last_seen = MAIN_TICK.load(std::sync::atomic::Ordering::Relaxed);
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(3));
+            let sent = app.run_on_main_thread(|| {
+                MAIN_TICK.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            });
+            if sent.is_err() {
+                return; // event loop gone: we are shutting down
+            }
+            std::thread::sleep(std::time::Duration::from_secs(1));
+            let now = MAIN_TICK.load(std::sync::atomic::Ordering::Relaxed);
+            if now == last_seen {
+                tracing::warn!(
+                    step = cur_step(),
+                    "main thread unresponsive for >1s (UI freeze in progress)"
+                );
+            }
+            last_seen = now;
+        }
+    });
+}
+
 fn cache_status(state: &AppState, status: &SessionStatus) {
     if let Ok(mut g) = state.last_status.lock() {
         *g = Some(status.clone());
@@ -258,6 +322,7 @@ struct ServeEventView {
 /// Native open-file dialog (user-facing pick; never prefill sandbox/.tmp paths in UI).
 #[tauri::command]
 fn pick_open_file() -> Option<String> {
+    let _s = StepGuard::new("cmd:pick_open_file");
     rfd::FileDialog::new()
         .set_title("选择要发送的文件")
         .pick_file()
@@ -267,6 +332,7 @@ fn pick_open_file() -> Option<String> {
 /// Multi-select files for the send queue.
 #[tauri::command]
 fn pick_open_files() -> Vec<String> {
+    let _s = StepGuard::new("cmd:pick_open_files");
     rfd::FileDialog::new()
         .set_title("选择要发送的文件（可多选）")
         .pick_files()
@@ -279,6 +345,7 @@ fn pick_open_files() -> Vec<String> {
 /// Default receive directory: Downloads/LanBridge (created if missing).
 #[tauri::command]
 fn default_recv_dir() -> Result<String, String> {
+    let _s = StepGuard::new("cmd:default_recv_dir");
     let home = std::env::var("USERPROFILE").map_err(|_| "no USERPROFILE".to_string())?;
     let dir = PathBuf::from(home).join("Downloads").join("LanBridge");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -288,6 +355,7 @@ fn default_recv_dir() -> Result<String, String> {
 /// Open a file or folder in Windows Explorer.
 #[tauri::command]
 fn open_path(path: String) -> Result<(), String> {
+    let _s = StepGuard::new("cmd:open_path");
     let p = PathBuf::from(&path);
     if !p.exists() {
         return Err("路径不存在".into());
@@ -306,6 +374,7 @@ fn open_path(path: String) -> Result<(), String> {
 /// Native folder dialog for receive destination.
 #[tauri::command]
 fn pick_save_folder() -> Option<String> {
+    let _s = StepGuard::new("cmd:pick_save_folder");
     rfd::FileDialog::new()
         .set_title("选择接收保存目录")
         .pick_folder()
@@ -315,6 +384,7 @@ fn pick_save_folder() -> Option<String> {
 /// Native open dialog filtered to PNG.
 #[tauri::command]
 fn pick_open_png() -> Option<String> {
+    let _s = StepGuard::new("cmd:pick_open_png");
     rfd::FileDialog::new()
         .set_title("选择 PNG 图片")
         .add_filter("PNG", &["png"])
@@ -421,7 +491,6 @@ fn os_clipboard_set_png(png: &[u8]) -> Result<(u32, u32), String> {
     Ok((w, h))
 }
 
-
 /// All clipboard access goes through this lock: two threads opening/closing the Win32 clipboard
 /// at the same time invalidate each other's handles (the 0xc0000005 we saw at startup).
 static CLIPBOARD_LOCK: StdMutex<()> = StdMutex::new(());
@@ -451,7 +520,10 @@ fn os_clipboard_get_png() -> Result<Vec<u8>, String> {
             return Ok(png);
         }
     }
-    eprintln!("[clip] cannot read image, formats: {:?}", clipboard_format_names());
+    eprintln!(
+        "[clip] cannot read image, formats: {:?}",
+        clipboard_format_names()
+    );
     Err("clipboard has no image".into())
 }
 
@@ -470,7 +542,12 @@ fn windows_clipboard_image_png() -> Result<Vec<u8>, String> {
     }
     #[link(name = "shell32")]
     extern "system" {
-        fn DragQueryFileW(hdrop: *mut core::ffi::c_void, ifile: u32, path: *mut u16, cch: u32) -> u32;
+        fn DragQueryFileW(
+            hdrop: *mut core::ffi::c_void,
+            ifile: u32,
+            path: *mut u16,
+            cch: u32,
+        ) -> u32;
     }
     #[link(name = "kernel32")]
     extern "system" {
@@ -576,6 +653,7 @@ fn short_id() -> String {
 /// Sync command — prefer this over writing clipboard inside async serve workers.
 #[tauri::command]
 fn copy_text_to_os_clipboard(text: String) -> Result<(), String> {
+    let _s = StepGuard::new("cmd:copy_text_to_os_clipboard");
     let t = text.trim();
     if t.is_empty() {
         return Err("empty".into());
@@ -585,7 +663,7 @@ fn copy_text_to_os_clipboard(text: String) -> Result<(), String> {
 
 /// Sync PNG write for inbound clipboard (main-thread friendly vs async serve).
 #[tauri::command]
-fn copy_png_to_os_clipboard(png_base64: String) -> Result<(), String> {
+async fn copy_png_to_os_clipboard(png_base64: String) -> Result<(), String> {
     let png = decode_b64(&png_base64)?;
     if png.is_empty() {
         return Err("empty png".into());
@@ -595,40 +673,43 @@ fn copy_png_to_os_clipboard(png_base64: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn read_os_clipboard_text() -> Result<String, String> {
-    match os_clipboard_get_text() {
+async fn read_os_clipboard_text() -> Result<String, String> {
+    let started = std::time::Instant::now();
+    let out = match os_clipboard_get_text() {
         Ok(s) => Ok(s.trim().to_string()),
         Err(e) => {
             // An image-only clipboard (e.g. a screenshot) is not an error: arboard reports
             // "no text available", and the caller uses that empty string to switch to the
             // image branch. Only surface real failures.
-            if os_clipboard_has_image() {
+            if os_clipboard_has_image().await {
                 Ok(String::new())
             } else {
                 Err(e)
             }
         }
-    }
+    };
+    note_slow("read_os_clipboard_text", started);
+    out
 }
 
 /// Win32 clipboard change counter — skip reads when unchanged (vendor: GetClipboardSequenceNumber).
 #[tauri::command]
-fn read_os_clipboard_seq() -> u32 {
+async fn read_os_clipboard_seq() -> u32 {
+    let started = std::time::Instant::now();
     #[cfg(windows)]
-    {
+    let seq = {
         #[link(name = "user32")]
         extern "system" {
             fn GetClipboardSequenceNumber() -> u32;
         }
         // SAFETY: Win32 user32 export; no handle required.
         unsafe { GetClipboardSequenceNumber() }
-    }
+    };
     #[cfg(not(windows))]
-    {
-        0
-    }
+    let seq = 0u32;
+    note_slow("read_os_clipboard_seq", started);
+    seq
 }
-
 
 /// Decode a CF_DIB / CF_DIBV5 payload (the shape PixPin and Office put on the clipboard)
 /// into PNG. arboard returns Err for OLE/DataObject clipboards, so this is the fallback.
@@ -639,13 +720,19 @@ unsafe fn dib_to_png(ptr: *const u8, len: usize) -> Option<Vec<u8>> {
     }
     let bytes = std::slice::from_raw_parts(ptr, len);
     let read_u32 = |off: usize| -> Option<u32> {
-        bytes.get(off..off + 4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+        bytes
+            .get(off..off + 4)
+            .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
     };
     let read_i32 = |off: usize| -> Option<i32> {
-        bytes.get(off..off + 4).map(|b| i32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+        bytes
+            .get(off..off + 4)
+            .map(|b| i32::from_le_bytes([b[0], b[1], b[2], b[3]]))
     };
     let read_u16 = |off: usize| -> Option<u16> {
-        bytes.get(off..off + 2).map(|b| u16::from_le_bytes([b[0], b[1]]))
+        bytes
+            .get(off..off + 2)
+            .map(|b| u16::from_le_bytes([b[0], b[1]]))
     };
 
     let header_size = read_u32(0)? as usize;
@@ -744,10 +831,11 @@ fn clipboard_format_names() -> Vec<String> {
 /// True when the OS clipboard holds an image (screenshot / "copy image").
 /// Cheap: only format presence, no pixel copy. Windows always synthesises CF_DIB.
 #[tauri::command]
-fn os_clipboard_has_image() -> bool {
+async fn os_clipboard_has_image() -> bool {
+    let started = std::time::Instant::now();
     let _g = clipboard_guard();
     #[cfg(windows)]
-    {
+    let found = {
         #[link(name = "user32")]
         extern "system" {
             fn IsClipboardFormatAvailable(format: u32) -> i32;
@@ -759,18 +847,13 @@ fn os_clipboard_has_image() -> bool {
             IsClipboardFormatAvailable(CF_DIB) != 0 || IsClipboardFormatAvailable(CF_DIBV5) != 0
         };
         // Screenshot tools may copy a file or a PNG blob instead of a bitmap.
-        let found = bitmap || windows_clipboard_image_png().is_ok();
-        if !found {
-            eprintln!("[clip] no image, formats: {:?}", clipboard_format_names());
-        }
-        found
-    }
+        bitmap || windows_clipboard_image_png().is_ok()
+    };
     #[cfg(not(windows))]
-    {
-        false
-    }
+    let found = false;
+    note_slow("os_clipboard_has_image", started);
+    found
 }
-
 
 // ---------------------------------------------------------------------------
 // Clipboard history (local only): survives restarts, capped, wipeable.
@@ -898,7 +981,14 @@ fn history_add_image(png: &[u8]) {
 }
 
 #[tauri::command]
-fn clip_history_list(limit: Option<u32>) -> Vec<ClipHistoryEntry> {
+async fn clip_history_list(limit: Option<u32>) -> Vec<ClipHistoryEntry> {
+    let started = std::time::Instant::now();
+    let list = clip_history_list_inner(limit);
+    note_slow("clip_history_list", started);
+    list
+}
+
+fn clip_history_list_inner(limit: Option<u32>) -> Vec<ClipHistoryEntry> {
     let _g = history_guard();
     let entries = history_load(&clip_history_dir());
     let n = limit.unwrap_or(30) as usize;
@@ -907,6 +997,7 @@ fn clip_history_list(limit: Option<u32>) -> Vec<ClipHistoryEntry> {
 
 #[tauri::command]
 fn clip_history_clear() -> Result<(), String> {
+    let _s = StepGuard::new("cmd:clip_history_clear");
     let _g = history_guard();
     let dir = clip_history_dir();
     let _ = std::fs::remove_dir_all(&dir);
@@ -916,6 +1007,7 @@ fn clip_history_clear() -> Result<(), String> {
 /// Put a history entry back on the system clipboard.
 #[tauri::command]
 fn clip_history_apply(id: String) -> Result<(), String> {
+    let _s = StepGuard::new("cmd:clip_history_apply");
     let entry = {
         let _g = history_guard();
         let dir = clip_history_dir();
@@ -940,6 +1032,7 @@ fn clip_history_apply(id: String) -> Result<(), String> {
 
 #[tauri::command]
 fn core_info() -> CoreInfo {
+    let _s = StepGuard::new("cmd:core_info");
     let f = Features::M3_CLIPBOARD.0;
     CoreInfo {
         protocol_version: PROTOCOL_VERSION,
@@ -949,6 +1042,7 @@ fn core_info() -> CoreInfo {
 
 #[tauri::command]
 fn make_identity(alias: String) -> Result<IdentityView, String> {
+    let _s = StepGuard::new("cmd:make_identity");
     let id = DeviceIdentity::generate(format!("win-{}", short_id()), alias)
         .map_err(|e| e.to_string())?;
     Ok(IdentityView {
@@ -960,11 +1054,13 @@ fn make_identity(alias: String) -> Result<IdentityView, String> {
 
 #[tauri::command]
 fn make_pairing_code() -> String {
+    let _s = StepGuard::new("cmd:make_pairing_code");
     generate_pairing_code().as_str().to_string()
 }
 
 #[tauri::command]
 fn session_open(state: State<'_, AppState>, alias: String) -> Result<SessionStatus, String> {
+    let _s = StepGuard::new("cmd:session_open");
     ensure_crypto();
     let dir = session_data_dir();
     let a = if alias.trim().is_empty() {
@@ -982,8 +1078,9 @@ fn session_open(state: State<'_, AppState>, alias: String) -> Result<SessionStat
 }
 
 #[tauri::command]
-fn session_status(state: State<'_, AppState>) -> Result<SessionStatus, String> {
-    match state.session.try_lock() {
+async fn session_status(state: State<'_, AppState>) -> Result<SessionStatus, String> {
+    let started = std::time::Instant::now();
+    let out = match state.session.try_lock() {
         Ok(mut slot) => {
             let svc = slot.as_mut().ok_or_else(|| "会话未打开".to_string())?;
             let _ = svc.poll_pair_wait();
@@ -1004,7 +1101,9 @@ fn session_status(state: State<'_, AppState>) -> Result<SessionStatus, String> {
             overlay_live_progress(&state, &mut st);
             Ok(st)
         }
-    }
+    };
+    note_slow("session_status", started);
+    out
 }
 
 #[tauri::command]
@@ -1058,6 +1157,7 @@ async fn session_go_online(
 
 #[tauri::command]
 fn session_go_offline(state: State<'_, AppState>) -> Result<SessionStatus, String> {
+    let _s = StepGuard::new("cmd:session_go_offline");
     with_session_mut(&state, |svc| {
         svc.go_offline();
         Ok(svc.status())
@@ -1091,6 +1191,7 @@ async fn session_begin_pair(state: State<'_, AppState>) -> Result<SessionStatus,
 
 #[tauri::command]
 fn session_pairing_code(state: State<'_, AppState>) -> Result<String, String> {
+    let _s = StepGuard::new("cmd:session_pairing_code");
     // Explicit remint only; arm_pair_wait uses the current code without reminting.
     with_session_mut(&state, |svc| Ok(svc.mint_pairing_code()))
 }
@@ -1132,6 +1233,7 @@ fn session_set_peer(
     host: String,
     port: u16,
 ) -> Result<SessionStatus, String> {
+    let _s = StepGuard::new("cmd:session_set_peer");
     with_session_mut(&state, |svc| {
         svc.set_peer(&host, port).map_err(|e| e.to_string())?;
         Ok(svc.status())
@@ -1294,12 +1396,10 @@ async fn session_serve_once(
     let read = {
         let mut slot = state.session.lock().await;
         let svc = slot.as_mut().ok_or_else(|| "会话未打开".to_string())?;
-        svc.read_inbound(&mut session)
-            .await
-            .map_err(|e| {
-                tracing::debug!(error = %e, "serve_once: first frame failed");
-                e.to_string()
-            })?
+        svc.read_inbound(&mut session).await.map_err(|e| {
+            tracing::debug!(error = %e, "serve_once: first frame failed");
+            e.to_string()
+        })?
     };
     let frame = match read {
         InboundRead::Frame(f) => f,
@@ -1355,18 +1455,29 @@ async fn session_serve_once(
             }
         }
         InboundEvent::ClipboardPng { bytes, png_base64 } => {
-            if let Ok(png) = decode_b64(&png_base64) {
+            let png = match decode_b64(&png_base64) {
+                Ok(p) => p,
+                Err(e) => {
+                    tracing::warn!(error = %e, "clipboard image: base64 decode failed");
+                    Vec::new()
+                }
+            };
+            let write_msg = if png.is_empty() {
+                "接收成功但写系统剪贴板失败: 图片数据损坏".to_string()
+            } else {
                 history_add_image(&png);
-            }
-            let write_msg = write_png_clipboard_on_main(&app, png_base64.clone());
+                write_png_clipboard_on_main(&app, png)
+            };
             ServeEventView {
                 kind: "clipboard_png".into(),
                 bytes: bytes as u64,
                 path: None,
                 preview: Some("[PNG]".into()),
+                // Never ship the image through the IPC: it was already written to the clipboard
+                // here, and a 20 MB JSON string froze the WebView for seconds.
                 message: Some(write_msg),
                 text: None,
-                png_base64: Some(png_base64),
+                png_base64: None,
             }
         }
         InboundEvent::PeerLeft { reason } => ServeEventView {
@@ -1446,12 +1557,20 @@ fn write_clipboard_on_main(app: &tauri::AppHandle, text: String) -> String {
     }
 }
 
-fn write_png_clipboard_on_main(app: &tauri::AppHandle, png_base64: String) -> String {
+/// Write PNG bytes to the OS clipboard on the main thread.
+///
+/// The base64 decode used to happen *inside* the dispatch closure, i.e. on the UI thread: a 16 MiB
+/// clipboard image became a multi-second freeze (Windows reports「未响应」). Decode here, on the
+/// serve task, and hand over plain bytes.
+fn write_png_clipboard_on_main(app: &tauri::AppHandle, png: Vec<u8>) -> String {
     let (tx, rx) = std::sync::mpsc::sync_channel(1);
+    step("main:png-clipboard:queued");
     if app
         .run_on_main_thread(move || {
-            let r = decode_b64(&png_base64).and_then(|png| os_clipboard_set_png(&png).map(|_| ()));
+            step("main:png-clipboard:running");
+            let r = os_clipboard_set_png(&png).map(|_| ());
             let _ = tx.send(r);
+            step("main:png-clipboard:done");
         })
         .is_err()
     {
@@ -1516,10 +1635,12 @@ async fn self_loopback_transfer() -> Result<TransferView, String> {
     std::fs::write(&src_file, &payload).map_err(|e| e.to_string())?;
 
     let host_id = Arc::new(
-        DeviceIdentity::generate(format!("win-h-{}", short_id()), "H").map_err(|e| e.to_string())?,
+        DeviceIdentity::generate(format!("win-h-{}", short_id()), "H")
+            .map_err(|e| e.to_string())?,
     );
     let guest_id = Arc::new(
-        DeviceIdentity::generate(format!("win-g-{}", short_id()), "G").map_err(|e| e.to_string())?,
+        DeviceIdentity::generate(format!("win-g-{}", short_id()), "G")
+            .map_err(|e| e.to_string())?,
     );
     let code = generate_pairing_code();
     let listener = TcpListener::bind("127.0.0.1:0")
@@ -1565,10 +1686,7 @@ async fn self_loopback_transfer() -> Result<TransferView, String> {
     )
     .await
     .map_err(|e| e.to_string())?;
-    let (recv_summary, path) = host
-        .await
-        .map_err(|e| e.to_string())?
-        .map_err(|e| e)?;
+    let (recv_summary, path) = host.await.map_err(|e| e.to_string())?.map_err(|e| e)?;
     if sent.bytes_transferred != recv_summary.bytes_transferred {
         return Err("byte count mismatch".into());
     }
@@ -1585,10 +1703,12 @@ async fn self_loopback_clipboard_image() -> Result<ClipboardView, String> {
     let rgba = [255u8, 0, 0, 255, 0, 255, 0, 255];
     let png = png_encode_rgba(2, 1, &rgba)?;
     let host_id = Arc::new(
-        DeviceIdentity::generate(format!("win-ih-{}", short_id()), "H").map_err(|e| e.to_string())?,
+        DeviceIdentity::generate(format!("win-ih-{}", short_id()), "H")
+            .map_err(|e| e.to_string())?,
     );
     let guest_id = Arc::new(
-        DeviceIdentity::generate(format!("win-ig-{}", short_id()), "G").map_err(|e| e.to_string())?,
+        DeviceIdentity::generate(format!("win-ig-{}", short_id()), "G")
+            .map_err(|e| e.to_string())?,
     );
     let code = generate_pairing_code();
     let listener = TcpListener::bind("127.0.0.1:0")
@@ -1641,10 +1761,12 @@ async fn self_loopback_clipboard_text(text: String) -> Result<ClipboardView, Str
         }
     };
     let host_id = Arc::new(
-        DeviceIdentity::generate(format!("win-ch-{}", short_id()), "H").map_err(|e| e.to_string())?,
+        DeviceIdentity::generate(format!("win-ch-{}", short_id()), "H")
+            .map_err(|e| e.to_string())?,
     );
     let guest_id = Arc::new(
-        DeviceIdentity::generate(format!("win-cg-{}", short_id()), "G").map_err(|e| e.to_string())?,
+        DeviceIdentity::generate(format!("win-cg-{}", short_id()), "G")
+            .map_err(|e| e.to_string())?,
     );
     let code = generate_pairing_code();
     let listener = TcpListener::bind("127.0.0.1:0")
@@ -1761,6 +1883,7 @@ fn spawn_screenshot_watcher(app: tauri::AppHandle) {
                     // stderr lands in the start.ps1 terminal, which is the only log surface
                     // the shell has today.
                     eprintln!("[screenshot] {}", path.display());
+                    step("emit:screenshot:begin");
                     let _ = app.emit(
                         "screenshot-file",
                         ScreenshotEvent {
@@ -1768,6 +1891,7 @@ fn spawn_screenshot_watcher(app: tauri::AppHandle) {
                             bytes,
                         },
                     );
+                    step("emit:screenshot:end");
                 }
             }
             tokio::time::sleep(std::time::Duration::from_millis(800)).await;
@@ -1787,7 +1911,8 @@ fn log_dir() -> PathBuf {
 }
 
 /// Keeps the non-blocking writer thread alive for the whole process.
-static LOG_GUARD: StdMutex<Option<tracing_appender::non_blocking::WorkerGuard>> = StdMutex::new(None);
+static LOG_GUARD: StdMutex<Option<tracing_appender::non_blocking::WorkerGuard>> =
+    StdMutex::new(None);
 
 fn init_logging() {
     use tracing_subscriber::layer::SubscriberExt;
@@ -1831,6 +1956,7 @@ pub fn run() {
         })
         .plugin(tauri_plugin_notification::init())
         .setup(|app| {
+            spawn_main_thread_watchdog(app.handle().clone());
             spawn_screenshot_watcher(app.handle().clone());
             let show = MenuItem::with_id(app, "show", "打开窗口", true, None::<&str>)?;
             let pause_clip =
@@ -1951,16 +2077,18 @@ mod clipboard_probe_tests {
             bytes: std::borrow::Cow::Owned(vec![255u8; 2 * 2 * 4]),
         })
         .expect("set image");
-        assert!(os_clipboard_has_image(), "image in clipboard must be detected");
+        assert!(
+            os_clipboard_has_image(),
+            "image in clipboard must be detected"
+        );
 
-        cb.set_text("lanbridge-probe".to_string()).expect("set text");
+        cb.set_text("lanbridge-probe".to_string())
+            .expect("set text");
         assert!(
             !os_clipboard_has_image(),
             "text-only clipboard must not be reported as image"
         );
     }
-
-
 
     /// Reproduces the startup crash: reading back an image we wrote ourselves.
     #[test]
@@ -2023,6 +2151,9 @@ mod clipboard_probe_tests {
 
         let got = os_clipboard_get_png().expect("clipboard file image must be readable");
         assert!(got.starts_with(b"\x89PNG\r\n\x1a\n"), "expected PNG bytes");
-        assert!(os_clipboard_has_image(), "file-clipboard must report an image");
+        assert!(
+            os_clipboard_has_image(),
+            "file-clipboard must report an image"
+        );
     }
 }

@@ -737,20 +737,11 @@ async function startServeLoop() {
         });
         clipHint.value = msg;
       } else if (ev.kind === "clipboard_png") {
-        const b64 =
-          (ev as { png_base64?: string }).png_base64 ??
-          (ev as { pngBase64?: string }).pngBase64;
-        let msg = ev.message || "已写入系统剪贴板";
+        // The backend writes the image to the OS clipboard itself (main thread, decoded bytes
+        // only). It used to also ship a ~20 MB base64 string here and the UI echoed it back,
+        // which froze the window for seconds on a 4K screenshot — keep the payload out of IPC.
+        const msg = ev.message || "已写入系统剪贴板";
         clipInboundQuietUntil = Date.now() + 4000;
-        if (!ev.message || String(ev.message).includes("失败")) {
-          try {
-            if (!b64) throw new Error("empty png");
-            await invoke("copy_png_to_os_clipboard", { pngBase64: b64 });
-            msg = "已写入系统剪贴板";
-          } catch (e) {
-            msg = `接收成功但写系统剪贴板失败: ${String(e).slice(0, 80)}`;
-          }
-        }
         // Remember the sequence number we just produced, otherwise the poll would echo this
         // image straight back to the phone once the quiet window expires.
         void invoke<number>("read_os_clipboard_seq")
